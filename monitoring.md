@@ -7,6 +7,9 @@ Our monitoring requirements are driven by two factors:
 2. repeatability of monitoring processes as a part of the
    developmemt process
 
+3. operations and development requirements - we need to ensure
+   that we meet all requirements of operations and development
+
 # Asumptions
 
 1. A traditional monitoring tool cannot scale b/c it
@@ -19,57 +22,101 @@ Our monitoring requirements are driven by two factors:
 3. As much logic as possible should be performed on the individual
    nodes so that the load of testing is distributed as much as possible.
 
-4. The volume of results stored should be limited as much as possible.
+4. Metrics should be backed-up in a place specific to each node
 
-# solution
+# Proposed Solution
 
-Use etcd and a custom framework to improvement the performance of
-monitoring by reducing the need of a central service to do work.
+## types of monitoring checks:
 
-## High Level
+Seperate checks into the appropriate categories:
 
-Run all monitoring tasks on the local systems.
+* service checks - used as service checks in consul. They are responsible
+  for determinig if an individual service is working. They should not have
+  any external dependencies on any other services.
 
-The machine should be updated in etcd _only_ in the case of a failure.
-To indicate as failed, it should be added to the _failures_ directory.
-The results of the failure should also be pushed to swift, and a link
-to the swift results should be associated with the failure/<node> directory.
+* validation checks - responsible for determinig rather or not the core
+  services are available. They can rely on services running on other
+  machines. During deployments, they are used to satisfy eventual consistency
+  requirements and tell nodes that they should continue running b/c things
+  are not in the overall desired state.
 
-## Code implementation
+## metric colletion
 
-the project should be a simple plugin that does the following:
+  metrics - metrics are used to capture time series information that can be
+  used to determine how a service is performing over time. It should be combined
+  with analysis tools run on each node that can identify when metric trends
+  indicate an issue.
 
-* Look for specified plugins in a special directory
+QUESTION: Am I missing any kinds of checks?
 
-/var/lib/<tool\_name>/<plugin\_name>/<tests>
+# Implementation
 
-* For each plugin, run the tests using that plugin
+## validation
 
-* It may make sense to use a unit test framework to display results
+Deploy all monitoring checks using Puppet as bash scripts that live
+in either the `/usr/lib/jiocloud/tests` in either the validation or
+service\_checks directories dependening on the kind of check.
 
-* Capture the end result of which tests passed/failed
+These scripts should comform the nagios standard return codes
+(0=pass,1=warn,2=fail) as this is also what consul expects.
 
-* Capture the end result of whether all tests passed
+Register all services that must be alive in consul. Register a separate service
+called validation that is used to register status of validation in consul.
 
-* If any tests fail, write test output to swift, and mark
-  node as failed in etcd
+Use the values of these checks to determine if we think a specific node is
+healthy. Run Puppet on nodes that are not currently in a healthy state.
 
-* When things don't fail, write them locally, and occassionally sync
-  passed results to swift.
+## Helper code
+
+- get\_failures - used to determine if any nodes have any services in a
+  failed state. This is used by jenkins to determine if a build passed.
+- local\_health - used to determine if anything is failing on the current node.
+  This is used to determine if a node should re-run Puppet.
 
 ## metrics
 
-store metrics locally. Offer a local http connection to view metrics for
-each server.
+I am currently considering collectd for metric collection. It seems to be
+the most widely used solution and has a very robust set of existing plugins.
 
-## Things to look into
+We can additionally consider statsd if we find that we need to add a lot of
+custom metrics.
 
-- Can we just use serverspec for this?
-- Can we reuse nagios plugins
+Initially, we can just start collecting metrics and storing them locally while
+we figure out more complicated things like how to support queries for
+correlation and alerts without a centralized service.
 
-## Unknowns
+Since metrics may need to persist when a node days, we can ensure that each
+host has it's own object store where it can periodically backup it's metrics.
 
-What about aggregated tests? (things that have to know if a certain condition exists
-across multiple hosts)
+It would also be easy enough to host a local graphite instance of each node
+so that you can check graphs of metrics per node (as a starting point)
 
-Be able to stop notifications (send a signal in hubot)
+I'm not sure about how alerting for metrics should work. Maybe we could register
+a metrics service in consul? Otherwise, it might be nice to start by pushing
+metrics to an external service until we figure out what our longer term solution
+is.
+
+## Alerts
+
+I have not fully thought out how alerts will be implemented, here is my best
+idea at the moment (which I could easily be convinced to change)
+
+Consul already has services for indivual running services as well as
+validation. We could easily add another
+
+## Metric quiers/correlation
+
+Also, not sure how this would work. We need to get more requirements. I would
+like it to be a facility where you can query questions across the fleet and
+have each node search it's local data to understand what to do. I did a bit
+of research for tools that work like this and didn't immediately find
+something.
+
+# Considerations
+
+- What nagios plugins can we reuse?
+- What collectd plugins can we reuse?
+- We should just reuse the enovance nagios plugins:
+    https://github.com/enovance/openstack-monitoring
+
+# Unknowns
